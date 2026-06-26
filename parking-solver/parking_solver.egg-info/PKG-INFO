@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: parking_solver
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: shapely>=2.0
+Requires-Dist: pyclipper
+Requires-Dist: ezdxf
+Requires-Dist: numpy
+Requires-Dist: pydantic>=2
+Requires-Dist: PySide6
+Requires-Dist: PyYAML
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"

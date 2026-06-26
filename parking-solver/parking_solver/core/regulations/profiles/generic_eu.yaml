@@ -1,0 +1,23 @@
+# ILLUSTRATIVE DEFAULTS — verify against local code before use in permitting
+id: generic_eu
+units: metres
+stalls:
+  standard:        {width: 2.50, length: 5.00}
+  compact:         {width: 2.30, length: 4.50, max_ratio: 0.30}
+  accessible:      {width: 3.60, length: 5.00, access_aisle: 1.20}
+  accessible_van:  {width: 3.90, length: 5.00, access_aisle: 1.50}
+  ev:              {width: 2.50, length: 5.00}
+aisles:
+  "90": {two_way: 6.00, one_way: 6.00}
+  "75": {one_way: 5.50}
+  "60": {one_way: 4.50}
+  "45": {one_way: 3.50}
+fire_lane: {min_width: 3.50, max_dead_end: 50.0}
+overhang_allowance: 0.60
+# Required accessible stalls (step function: [total_stalls, required_accessible])
+accessible_count:
+  table: [[25,1],[50,2],[75,3],[100,4],[150,5],[200,6],[300,7],[400,8],[500,9]]
+  van_fraction: 0.125   # 1 in 8 accessible stalls must be van-accessible
+ev:
+  required_ratio: 0.10  # 10% EV (jurisdiction-dependent — verify)
+  ev_ready_ratio: 0.20

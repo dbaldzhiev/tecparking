@@ -1,0 +1,2 @@
+[console_scripts]
+parking-solver = parking_solver.__main__:main

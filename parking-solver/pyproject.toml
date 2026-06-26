@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parking_solver"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "shapely>=2.0",
+    "pyclipper",
+    "ezdxf",
+    "numpy",
+    "pydantic>=2",
+    "PySide6",
+    "PyYAML",
+    "pymoo>=0.6",
+    "pyqtgraph>=0.13",
+    "matplotlib",
+    "PyMuPDF",
+    "reportlab",
+    "ifcopenshell",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+rhino = ["rhino3dm"]   # needs CMake; install separately if CMake is available
+
+[project.scripts]
+parking-solver = "parking_solver.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["parking_solver*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,11 @@
+shapely>=2.0
+pyclipper
+ezdxf
+numpy
+pydantic>=2
+PySide6
+PyYAML
+
+[dev]
+pytest
+ruff
