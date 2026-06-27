@@ -32,13 +32,22 @@ from parking_solver.ui.params_panel import ParamsPanel
 from parking_solver.ui.pareto.pareto_panel import ParetoPanel
 
 
-def _action(parent, label: str, tip: str, shortcut: str = "",
+def _action(parent, label: str, tip: str, shortcut=None,
             checkable: bool = False, checked: bool = False) -> QAction:
-    """Factory: create a QAction with tooltip and optional shortcut."""
+    """Factory: create a QAction with tooltip and optional shortcut.
+
+    *shortcut* may be a plain string (e.g. "G"), a QKeySequence.StandardKey
+    enum value (e.g. QKeySequence.Open), or None.
+    """
     a = QAction(label, parent)
-    if shortcut:
+    if shortcut is not None:
         a.setShortcut(shortcut)
-        a.setToolTip(f"{tip}  [{shortcut}]")
+        # Build a human-readable shortcut string for the tooltip
+        if isinstance(shortcut, str):
+            shortcut_str = shortcut
+        else:
+            shortcut_str = QKeySequence(shortcut).toString()
+        a.setToolTip(f"{tip}  [{shortcut_str}]")
     else:
         a.setToolTip(tip)
     a.setStatusTip(tip)
@@ -100,7 +109,7 @@ class MainWindow(QMainWindow):
         # ── Import ────────────────────────────────────────────────────────────
         self._act_open = _action(
             self, "Open DXF", "Import a DXF file — pick entities to use as the site boundary",
-            shortcut=QKeySequence.Open.toString())
+            shortcut=QKeySequence.Open)
         self._act_open.triggered.connect(self._open_dxf)
 
         self._act_open_pdf = _action(
@@ -117,7 +126,7 @@ class MainWindow(QMainWindow):
 
         self._act_save = _action(
             self, "Save", "Save current project to a JSON file",
-            shortcut=QKeySequence.Save.toString())
+            shortcut=QKeySequence.Save)
         self._act_save.triggered.connect(self._save_project)
 
         self._act_load = _action(
