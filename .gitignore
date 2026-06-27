@@ -1,0 +1,116 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# ── Distribution / packaging ──────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+wheels/
+*.whl
+*.tar.gz
+*.zip
+sdist/
+var/
+pip-wheel-metadata/
+share/python-wheels/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env/
+.venv*/
+
+# ── Environment variables / secrets ──────────────────────────────────────────
+.env
+.env.*
+*.env
+!.env.example
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+nosetests.xml
+junit.xml
+
+# ── Linting / type checking ───────────────────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.classpath
+.settings/
+
+# ── PyInstaller / Nuitka ──────────────────────────────────────────────────────
+*.spec
+*.onefile-build/
+*.dist/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── OS junk ───────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ── Temp / logs ───────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.patch
+*.diff
+
+# ── Database / data ───────────────────────────────────────────────────────────
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Generated output files (project exports) ──────────────────────────────────
+# Uncomment the lines below to also ignore solver output files.
+# These are typically user-created and worth keeping if you want to version them.
+# *.dxf
+# *.ifc
+# *.3dm
+# *.pdf
+
+# ── Profiling ─────────────────────────────────────────────────────────────────
+*.prof
+*.lprof
