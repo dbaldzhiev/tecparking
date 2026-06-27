@@ -5,7 +5,16 @@ numpy
 pydantic>=2
 PySide6
 PyYAML
+pymoo>=0.6
+pyqtgraph>=0.13
+matplotlib
+PyMuPDF
+reportlab
+ifcopenshell
 
 [dev]
 pytest
 ruff
+
+[rhino]
+rhino3dm

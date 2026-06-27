@@ -9,6 +9,14 @@ Requires-Dist: numpy
 Requires-Dist: pydantic>=2
 Requires-Dist: PySide6
 Requires-Dist: PyYAML
+Requires-Dist: pymoo>=0.6
+Requires-Dist: pyqtgraph>=0.13
+Requires-Dist: matplotlib
+Requires-Dist: PyMuPDF
+Requires-Dist: reportlab
+Requires-Dist: ifcopenshell
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"
 Requires-Dist: ruff; extra == "dev"
+Provides-Extra: rhino
+Requires-Dist: rhino3dm; extra == "rhino"

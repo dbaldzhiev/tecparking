@@ -113,4 +113,9 @@ $RECYCLE.BIN/
 
 # ── Profiling ─────────────────────────────────────────────────────────────────
 *.prof
-*.lprof
+
+parking_solver/core/__pycache__/
+parking_solver/app/__pycache__/
+parking_solver/io/__pycache__/
+parking_solver/ui/__pycache__/
+parking_solver/__pycache__/
