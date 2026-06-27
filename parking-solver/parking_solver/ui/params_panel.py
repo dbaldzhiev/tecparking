@@ -8,13 +8,17 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
+from shapely.geometry import Polygon
 
+from parking_solver.core.geometry.helpers import polygon_edge_directions
 from parking_solver.core.model import AisleDir, LayoutParams, LayoutType
 
 
@@ -93,15 +97,32 @@ class ParamsPanel(QDockWidget):
         layout_box = QGroupBox("Layout")
         layout_form = QFormLayout(layout_box)
 
+        self._strategy_combo = QComboBox()
+        self._strategy_combo.addItem("Banded rows", LayoutType.STANDARD)
+        self._strategy_combo.addItem("Herringbone", LayoutType.FISHBONE)
+        self._strategy_combo.addItem("Perimeter ring", LayoutType.PERIMETER_RING)
+        self._strategy_combo.addItem("Ring + infill", LayoutType.RING_INFILL)
+        self._strategy_combo.addItem("Multi-ring", LayoutType.MULTI_RING)
+        self._strategy_combo.addItem("Spine + branches", LayoutType.SPINE_BRANCHES)
+        layout_form.addRow("Strategy:", self._strategy_combo)
+
         self._orient_slider = QSlider(Qt.Horizontal)
         self._orient_slider.setRange(0, 175)
-        self._orient_slider.setSingleStep(5)
+        self._orient_slider.setSingleStep(1)
         self._orient_slider.setPageStep(15)
         self._orient_slider.setValue(0)
         self._orient_label = QLabel("0°")
         self._orient_label.setAlignment(Qt.AlignRight)
         layout_form.addRow("Orientation:", self._orient_slider)
         layout_form.addRow("", self._orient_label)
+
+        # Snap-to-edge buttons (populated when a site polygon is loaded)
+        self._edge_btn_row = QWidget()
+        self._edge_btn_layout = QHBoxLayout(self._edge_btn_row)
+        self._edge_btn_layout.setContentsMargins(0, 0, 0, 0)
+        self._edge_btn_layout.setSpacing(4)
+        self._edge_btn_row.setVisible(False)
+        layout_form.addRow("Snap to edge:", self._edge_btn_row)
 
         # ── site ─────────────────────────────────────────────────────────────
         site_box = QGroupBox("Site")
@@ -139,6 +160,7 @@ class ParamsPanel(QDockWidget):
         self._aisle_w_spin.valueChanged.connect(self._schedule)
         self._orient_slider.valueChanged.connect(self._on_orientation_changed)
         self._setback_spin.valueChanged.connect(self._schedule)
+        self._strategy_combo.currentIndexChanged.connect(self._schedule)
 
         self._on_angle_changed()  # enforce initial aisle-dir state
 
@@ -152,9 +174,10 @@ class ParamsPanel(QDockWidget):
         angle = self._angle_combo.currentData()
         aisle_dir = self._dir_combo.currentData()
         aisle_w_val = self._aisle_w_spin.value()
+        strategy = self._strategy_combo.currentData()
         return LayoutParams(
             orientation=float(self._orient_slider.value()),
-            layout_type=LayoutType.STANDARD,
+            layout_type=strategy,
             angle=float(angle),
             stall_width=self._width_spin.value(),
             stall_length=self._length_spin.value(),
@@ -164,6 +187,33 @@ class ParamsPanel(QDockWidget):
 
     def current_setback(self) -> float:
         return self._setback_spin.value()
+
+    def set_site_polygon(self, polygon: Polygon | None) -> None:
+        """Update snap-to-edge buttons to reflect the current site polygon."""
+        # Clear old buttons
+        while self._edge_btn_layout.count():
+            item = self._edge_btn_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if polygon is None:
+            self._edge_btn_row.setVisible(False)
+            return
+
+        dirs = polygon_edge_directions(polygon)
+        if not dirs:
+            self._edge_btn_row.setVisible(False)
+            return
+
+        for ang in dirs[:4]:  # at most 4 buttons
+            deg = int(round(ang))
+            btn = QPushButton(f"{deg}°")
+            btn.setFixedHeight(22)
+            btn.setToolTip(f"Set orientation to {deg}° (parallel to that polygon edge)")
+            btn.clicked.connect(lambda _checked=False, d=deg: self._snap_orientation(d))
+            self._edge_btn_layout.addWidget(btn)
+
+        self._edge_btn_row.setVisible(True)
 
     # ── slots ─────────────────────────────────────────────────────────────────
 
@@ -175,6 +225,9 @@ class ParamsPanel(QDockWidget):
         if not is_90:
             self._dir_combo.setCurrentIndex(1)  # force one-way
         self._schedule()
+
+    def _snap_orientation(self, deg: int) -> None:
+        self._orient_slider.setValue(min(deg, 175))
 
     def _on_orientation_changed(self, value: int) -> None:
         self._orient_label.setText(f"{value}°")

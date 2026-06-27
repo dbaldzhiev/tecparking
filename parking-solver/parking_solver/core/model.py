@@ -19,7 +19,11 @@ class StallType(Enum):
 
 class LayoutType(Enum):
     STANDARD = "standard"
-    FISHBONE = "fishbone"  # Phase 1+
+    FISHBONE = "fishbone"               # herringbone: alternating stall lean per row
+    PERIMETER_RING = "perimeter_ring"   # stalls along every edge, inner ring road
+    RING_INFILL = "ring_infill"         # perimeter ring + banded interior
+    MULTI_RING = "multi_ring"           # concentric perimeter rings filling inward
+    SPINE_BRANCHES = "spine_branches"   # wide central collector + perpendicular branch rows
 
 
 class AisleDir(Enum):

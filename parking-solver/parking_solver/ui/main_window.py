@@ -3,26 +3,33 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
     QFileDialog,
+    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
+    QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QToolBar,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
 from parking_solver.app.controller import Controller
 from parking_solver.app.workers import OptimizeWorker
+from parking_solver.core.generator import StrategyResult, generate_all
 from parking_solver.core.model import Layout
 from parking_solver.core.optimizer import OptimizationParams
 from parking_solver.io import export_ifc, export_pdf
@@ -30,6 +37,131 @@ from parking_solver.io.import_pdf import PDFTransform, calibrate, rasterise
 from parking_solver.ui.canvas import ParkingCanvas
 from parking_solver.ui.params_panel import ParamsPanel
 from parking_solver.ui.pareto.pareto_panel import ParetoPanel
+
+
+# ── Explore-All worker ────────────────────────────────────────────────────────
+
+class _ExploreWorker(QThread):
+    """Background thread for generate_all() so the UI stays responsive."""
+
+    progress = Signal(int, int)           # done, total
+    finished_ok = Signal(list)            # list[StrategyResult]
+    failed = Signal(str)
+
+    def __init__(self, site, profile, stall_width, stall_length, parent=None):
+        super().__init__(parent)
+        self._site = site
+        self._profile = profile
+        self._stall_width = stall_width
+        self._stall_length = stall_length
+
+    def run(self):
+        try:
+            results = generate_all(
+                self._site, self._profile,
+                stall_width=self._stall_width,
+                stall_length=self._stall_length,
+                progress_callback=lambda d, t: self.progress.emit(d, t),
+            )
+            self.finished_ok.emit(results)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+# ── Explore-All dialog ────────────────────────────────────────────────────────
+
+class _ExploreDialog(QDialog):
+    """Shows ranked strategy results; double-click a row to apply it."""
+
+    layout_selected = Signal(object)   # StrategyResult
+
+    _COLS = ["#", "Strategy", "Orient °", "Angle °", "Stalls", "m²/stall"]
+
+    def __init__(self, site, profile, params_panel: ParamsPanel, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Explore All Strategies")
+        self.resize(700, 480)
+
+        self._results: list[StrategyResult] = []
+
+        vbox = QVBoxLayout(self)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.setFormat("Generating… %p%")
+        vbox.addWidget(self._progress)
+
+        self._status_lbl = QLabel("Running exploration — please wait…")
+        vbox.addWidget(self._status_lbl)
+
+        self._table = QTableWidget(0, len(self._COLS))
+        self._table.setHorizontalHeaderLabels(self._COLS)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        self._table.doubleClicked.connect(self._apply_selected)
+        vbox.addWidget(self._table)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        self._apply_btn = QPushButton("Apply selected")
+        self._apply_btn.setEnabled(False)
+        self._apply_btn.clicked.connect(self._apply_selected)
+        btns.addButton(self._apply_btn, QDialogButtonBox.ActionRole)
+        btns.rejected.connect(self.reject)
+        vbox.addWidget(btns)
+
+        stall_w = params_panel.current_params().stall_width
+        stall_l = params_panel.current_params().stall_length
+
+        self._worker = _ExploreWorker(site, profile, stall_w, stall_l, parent=self)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished_ok.connect(self._on_done)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_progress(self, done: int, total: int) -> None:
+        pct = int(done / total * 100) if total else 0
+        self._progress.setValue(pct)
+
+    def _on_done(self, results: list) -> None:
+        self._results = results
+        self._progress.setValue(100)
+        self._status_lbl.setText(
+            f"Done — {len(results)} valid combinations found. "
+            "Double-click a row or select and press Apply."
+        )
+        self._populate(results)
+        self._apply_btn.setEnabled(True)
+
+    def _on_failed(self, msg: str) -> None:
+        self._progress.setValue(0)
+        self._status_lbl.setText(f"Error: {msg}")
+
+    def _populate(self, results: list[StrategyResult]) -> None:
+        self._table.setRowCount(len(results))
+        for row, r in enumerate(results):
+            vals = [
+                str(row + 1),
+                r.layout_type.value.replace("_", " ").title(),
+                f"{r.orientation:.0f}",
+                f"{r.angle:.0f}",
+                str(r.stall_count),
+                f"{r.layout.metrics.gross_area_per_stall:.1f}",
+            ]
+            for col, v in enumerate(vals):
+                item = QTableWidgetItem(v)
+                item.setTextAlignment(Qt.AlignCenter)
+                self._table.setItem(row, col, item)
+
+    def _apply_selected(self) -> None:
+        rows = self._table.selectedItems()
+        if not rows:
+            return
+        row = self._table.currentRow()
+        if 0 <= row < len(self._results):
+            self.layout_selected.emit(self._results[row])
+            self.accept()
 
 
 def _action(parent, label: str, tip: str, shortcut=None,
@@ -162,6 +294,12 @@ class MainWindow(QMainWindow):
         self._act_stop_opt.setEnabled(False)
         self._act_stop_opt.triggered.connect(self._stop_optimize)
 
+        self._act_explore = _action(
+            self, "Explore All",
+            "Run all strategies × orientations × angles and show ranked results",
+            shortcut="E")
+        self._act_explore.triggered.connect(self._start_explore)
+
         # ── Selection / Lock ──────────────────────────────────────────────────
         self._act_lock = _action(
             self, "Lock", "Lock selected stalls — they survive re-solve as fixed elements",
@@ -226,6 +364,7 @@ class MainWindow(QMainWindow):
 
         tb1.addWidget(_toolbar_label("SOLVE"))
         tb1.addAction(self._act_generate)
+        tb1.addAction(self._act_explore)
         tb1.addAction(self._act_optimize)
         tb1.addAction(self._act_stop_opt)
         tb1.addSeparator()
@@ -292,6 +431,7 @@ class MainWindow(QMainWindow):
         # Layout ───────────────────────────────────────────────────────────────
         layout_menu = self.menuBar().addMenu("&Layout")
         layout_menu.addAction(self._act_generate)
+        layout_menu.addAction(self._act_explore)
         layout_menu.addSeparator()
         layout_menu.addAction(self._act_optimize)
         layout_menu.addAction(self._act_stop_opt)
@@ -342,6 +482,7 @@ class MainWindow(QMainWindow):
         try:
             self._ctrl.set_boundary_from_entities(handles)
             self._canvas.show_boundary(self._ctrl.site.boundary)
+            self._notify_site_changed()
             self.statusBar().showMessage(
                 f"Boundary set from {len(handles)} selected entities."
             )
@@ -353,11 +494,17 @@ class MainWindow(QMainWindow):
         self._act_draw.setChecked(False)
         self._ctrl.set_boundary_from_polygon(pts)
         self._canvas.show_boundary(self._ctrl.site.boundary)
+        self._notify_site_changed()
         self.statusBar().showMessage(
             f"Boundary set — {len(pts)} vertices.  "
             "Adjust parameters and press Generate, or enable Auto-generate."
         )
         self._auto_generate()
+
+    def _notify_site_changed(self) -> None:
+        """Update UI elements that depend on the current site polygon."""
+        poly = self._ctrl.site.boundary if self._ctrl.site else None
+        self._params_panel.set_site_polygon(poly)
 
     # ── params / generate ─────────────────────────────────────────────────────
 
@@ -490,6 +637,32 @@ class MainWindow(QMainWindow):
         self._act_optimize.setEnabled(True)
         self._act_stop_opt.setEnabled(False)
         QMessageBox.critical(self, "Optimization failed", msg)
+
+    # ── explore all ───────────────────────────────────────────────────────────
+
+    def _start_explore(self) -> None:
+        if self._ctrl.site is None:
+            QMessageBox.information(
+                self, "No site",
+                "Open a DXF and set a boundary, or draw a polygon first."
+            )
+            return
+        dlg = _ExploreDialog(
+            self._ctrl.site, self._ctrl.profile, self._params_panel, parent=self
+        )
+        dlg.layout_selected.connect(self._on_explore_result)
+        dlg.exec()
+
+    def _on_explore_result(self, result: StrategyResult) -> None:
+        self._ctrl.layout = result.layout
+        self._canvas.show_layout(result.layout)
+        m = result.layout.metrics
+        self.statusBar().showMessage(
+            f"Applied explore result — {m.total_stalls} stalls  ·  "
+            f"{result.layout_type.value.replace('_', ' ').title()}  ·  "
+            f"{result.angle:.0f}°  ·  {result.orientation:.0f}°  ·  "
+            f"{m.gross_area_per_stall:.1f} m²/stall"
+        )
 
     def _on_pareto_candidate_selected(self, layout: Layout) -> None:
         self._ctrl.layout = layout
@@ -704,6 +877,7 @@ class MainWindow(QMainWindow):
             self._ctrl.load_project(path)
             if self._ctrl.site:
                 self._canvas.show_boundary(self._ctrl.site.boundary)
+                self._notify_site_changed()
             if self._ctrl.layout:
                 self._canvas.show_layout(self._ctrl.layout)
             self.statusBar().showMessage(f"Project loaded from {Path(path).name}")

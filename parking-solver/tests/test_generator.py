@@ -1,10 +1,11 @@
 from pathlib import Path
 
 import pytest
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
-from parking_solver.core.generator import generate
-from parking_solver.core.model import AisleDir, LayoutParams, Site
+from parking_solver.core.generator import generate, generate_all
+from parking_solver.core.geometry.helpers import polygon_edge_directions, stall_parallelogram_mirrored
+from parking_solver.core.model import AisleDir, LayoutParams, LayoutType, Site
 from parking_solver.core.regulations.engine import load_profile
 
 _PROFILE = Path(__file__).parent.parent / "parking_solver" / "core" / "regulations" / "profiles" / "generic_eu.yaml"
@@ -169,3 +170,263 @@ def test_generator_setback_reduces_count(profile):
     layout_no = generate(site_no_setback, profile, params)
     layout_sb = generate(site_setback, profile, params)
     assert layout_sb.metrics.total_stalls < layout_no.metrics.total_stalls
+
+
+def test_banded_has_cross_aisles(profile):
+    """Banded layout must emit at least 2 cross-aisles connecting the row aisles."""
+    site = Site(boundary=box(0, 0, 50, 32), setbacks=0.0)
+    params = LayoutParams(orientation=0.0, stall_width=2.5, stall_length=5.0,
+                          aisle_dir=AisleDir.TWO_WAY, layout_type=LayoutType.STANDARD)
+    layout = generate(site, profile, params)
+    # Row aisles are horizontal; end/cross aisles are vertical.
+    # Total aisles = row aisles + 2 cross aisles (at xmin and xmax).
+    assert len(layout.aisles) >= 3, "Expected row aisles + at least 2 cross aisles"
+
+
+# ── Perimeter ring ────────────────────────────────────────────────────────────
+
+def test_perimeter_ring_produces_stalls(profile):
+    site = Site(boundary=box(0, 0, 50, 32), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.PERIMETER_RING)
+    layout = generate(site, profile, params)
+    assert layout.metrics.total_stalls > 0
+
+
+def test_perimeter_ring_all_inside(profile):
+    boundary = box(0, 0, 50, 32)
+    site = Site(boundary=boundary, setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.PERIMETER_RING)
+    layout = generate(site, profile, params)
+    for i, s in enumerate(layout.stalls):
+        ratio = s.polygon.intersection(boundary).area / s.polygon.area
+        assert ratio >= 0.999, f"Perimeter stall {i} only {ratio:.4f} inside boundary"
+
+
+def test_perimeter_ring_no_overlaps(profile):
+    site = Site(boundary=box(0, 0, 50, 32), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.PERIMETER_RING)
+    layout = generate(site, profile, params)
+    polys = [s.polygon for s in layout.stalls]
+    for i in range(len(polys)):
+        for j in range(i + 1, len(polys)):
+            assert polys[i].intersection(polys[j]).area < 1e-4, \
+                f"Perimeter stalls {i} and {j} overlap"
+
+
+def test_perimeter_ring_has_ring_road(profile):
+    site = Site(boundary=box(0, 0, 50, 32), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.PERIMETER_RING)
+    layout = generate(site, profile, params)
+    assert len(layout.aisles) == 1, "Perimeter ring should produce exactly one ring-road aisle"
+
+
+# ── Ring + infill ─────────────────────────────────────────────────────────────
+
+def test_ring_infill_more_stalls_than_ring_alone(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    ring_params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                               layout_type=LayoutType.PERIMETER_RING)
+    fill_params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                               layout_type=LayoutType.RING_INFILL)
+    ring_layout = generate(site, profile, ring_params)
+    fill_layout = generate(site, profile, fill_params)
+    assert fill_layout.metrics.total_stalls > ring_layout.metrics.total_stalls, \
+        "Ring+infill should have more stalls than ring alone"
+
+
+def test_ring_infill_all_inside(profile):
+    boundary = box(0, 0, 60, 40)
+    site = Site(boundary=boundary, setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.RING_INFILL)
+    layout = generate(site, profile, params)
+    for i, s in enumerate(layout.stalls):
+        ratio = s.polygon.intersection(boundary).area / s.polygon.area
+        assert ratio >= 0.999, f"Ring+infill stall {i} only {ratio:.4f} inside boundary"
+
+
+def test_ring_infill_no_overlaps(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.RING_INFILL)
+    layout = generate(site, profile, params)
+    polys = [s.polygon for s in layout.stalls]
+    for i in range(min(len(polys), 60)):
+        for j in range(i + 1, min(len(polys), 60)):
+            assert polys[i].intersection(polys[j]).area < 1e-4, \
+                f"Ring+infill stalls {i} and {j} overlap"
+
+
+# ── Edge direction helper ─────────────────────────────────────────────────────
+
+def test_edge_directions_rectangle():
+    poly = box(0, 0, 50, 32)
+    dirs = polygon_edge_directions(poly)
+    # Rectangle has edges at 0° and 90°; longer horizontal edges should come first
+    assert 0 in [round(d) for d in dirs]
+    assert 90 in [round(d) for d in dirs]
+    assert round(dirs[0]) == 0, "Horizontal (longer) edge should be dominant"
+
+
+def test_edge_directions_rotated_rectangle():
+    poly = Polygon([(0, 0), (50, 0), (60, 20), (10, 20)])
+    dirs = polygon_edge_directions(poly)
+    assert len(dirs) > 0
+    for d in dirs:
+        assert 0.0 <= d < 180.0
+
+
+# ── Fishbone (herringbone) ────────────────────────────────────────────────────
+
+def test_fishbone_produces_stalls(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.FISHBONE)
+    layout = generate(site, profile, params)
+    assert layout.metrics.total_stalls > 0
+
+
+def test_fishbone_no_overlaps(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.FISHBONE)
+    layout = generate(site, profile, params)
+    polys = [s.polygon for s in layout.stalls]
+    for i in range(len(polys)):
+        for j in range(i + 1, len(polys)):
+            assert polys[i].intersection(polys[j]).area < 1e-4, \
+                f"Fishbone stalls {i} and {j} overlap"
+
+
+def test_fishbone_all_inside(profile):
+    boundary = box(0, 0, 60, 40)
+    site = Site(boundary=boundary, setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.FISHBONE)
+    layout = generate(site, profile, params)
+    for i, s in enumerate(layout.stalls):
+        ratio = s.polygon.intersection(boundary).area / s.polygon.area
+        assert ratio >= 0.999, f"Fishbone stall {i} only {ratio:.4f} inside boundary"
+
+
+def test_fishbone_stall_area(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.ONE_WAY,
+                          angle=60.0, layout_type=LayoutType.FISHBONE)
+    layout = generate(site, profile, params)
+    for s in layout.stalls:
+        assert s.polygon.area == pytest.approx(2.5 * 5.0, abs=1e-4)
+
+
+def test_fishbone_mirrored_stall_area():
+    """stall_parallelogram_mirrored must have area = W × L at all angles."""
+    for angle in [45.0, 60.0, 75.0, 90.0]:
+        poly = stall_parallelogram_mirrored(0.0, 0.0, 2.5, 5.0, angle)
+        assert poly.area == pytest.approx(2.5 * 5.0, abs=1e-4), \
+            f"Mirrored stall area wrong at {angle}°"
+
+
+# ── Multi-ring ────────────────────────────────────────────────────────────────
+
+def test_multi_ring_produces_stalls(profile):
+    site = Site(boundary=box(0, 0, 60, 50), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.MULTI_RING)
+    layout = generate(site, profile, params)
+    assert layout.metrics.total_stalls > 0
+
+
+def test_multi_ring_more_stalls_than_single_ring(profile):
+    site = Site(boundary=box(0, 0, 80, 60), setbacks=0.0)
+    ring_params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                               layout_type=LayoutType.PERIMETER_RING)
+    multi_params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                                layout_type=LayoutType.MULTI_RING)
+    ring_layout = generate(site, profile, ring_params)
+    multi_layout = generate(site, profile, multi_params)
+    assert multi_layout.metrics.total_stalls > ring_layout.metrics.total_stalls
+
+
+def test_multi_ring_all_inside(profile):
+    boundary = box(0, 0, 60, 50)
+    site = Site(boundary=boundary, setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.MULTI_RING)
+    layout = generate(site, profile, params)
+    for i, s in enumerate(layout.stalls):
+        ratio = s.polygon.intersection(boundary).area / s.polygon.area
+        assert ratio >= 0.999, f"Multi-ring stall {i} only {ratio:.4f} inside boundary"
+
+
+# ── Spine + branches ──────────────────────────────────────────────────────────
+
+def test_spine_branches_produces_stalls(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.SPINE_BRANCHES)
+    layout = generate(site, profile, params)
+    assert layout.metrics.total_stalls > 0
+
+
+def test_spine_branches_all_inside(profile):
+    boundary = box(0, 0, 60, 40)
+    site = Site(boundary=boundary, setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.SPINE_BRANCHES)
+    layout = generate(site, profile, params)
+    for i, s in enumerate(layout.stalls):
+        ratio = s.polygon.intersection(boundary).area / s.polygon.area
+        assert ratio >= 0.999, f"Spine stall {i} only {ratio:.4f} inside boundary"
+
+
+def test_spine_branches_has_spine_aisle(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.SPINE_BRANCHES)
+    layout = generate(site, profile, params)
+    assert len(layout.aisles) >= 1, "Spine+branches must have at least the spine aisle"
+
+
+def test_spine_branches_no_overlaps(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    params = LayoutParams(stall_width=2.5, stall_length=5.0, aisle_dir=AisleDir.TWO_WAY,
+                          layout_type=LayoutType.SPINE_BRANCHES)
+    layout = generate(site, profile, params)
+    polys = [s.polygon for s in layout.stalls]
+    for i in range(min(len(polys), 60)):
+        for j in range(i + 1, min(len(polys), 60)):
+            assert polys[i].intersection(polys[j]).area < 1e-4, \
+                f"Spine stalls {i} and {j} overlap"
+
+
+# ── generate_all ──────────────────────────────────────────────────────────────
+
+def test_generate_all_returns_sorted(profile):
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0)
+    results = generate_all(site, profile, stall_width=2.5, stall_length=5.0)
+    assert len(results) > 0
+    counts = [r.stall_count for r in results]
+    assert counts == sorted(counts, reverse=True), "generate_all must be sorted by stall count"
+
+
+def test_generate_all_all_inside(profile):
+    boundary = box(0, 0, 60, 40)
+    site = Site(boundary=boundary, setbacks=0.0)
+    results = generate_all(site, profile, stall_width=2.5, stall_length=5.0)
+    for result in results:
+        for i, s in enumerate(result.layout.stalls):
+            ratio = s.polygon.intersection(boundary).area / s.polygon.area
+            assert ratio >= 0.999, \
+                f"{result.label}: stall {i} only {ratio:.4f} inside boundary"
+
+
+def test_generate_all_covers_all_strategies(profile):
+    site = Site(boundary=box(0, 0, 80, 60), setbacks=0.0)
+    results = generate_all(site, profile, stall_width=2.5, stall_length=5.0)
+    found = {r.layout_type for r in results}
+    assert found == set(LayoutType), \
+        f"Missing strategies: {set(LayoutType) - found}"

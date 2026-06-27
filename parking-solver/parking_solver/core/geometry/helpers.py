@@ -32,6 +32,33 @@ def stall_parallelogram(
     return Polygon([c0, c1, c2, c3])
 
 
+def stall_parallelogram_mirrored(
+    x: float,
+    row_y: float,
+    stall_width: float,
+    stall_length: float,
+    theta_deg: float,
+) -> Polygon:
+    """Right-leaning stall for top rows in fishbone/herringbone layouts.
+
+    This is the horizontal reflection of stall_parallelogram.  At any angle:
+      * area = stall_width × stall_length  (proven analytically)
+      * adjacent mirrored stalls at pitch W/sin(θ) share a boundary edge but
+        do not overlap — same non-overlap guarantee as the normal stall
+    theta_deg=90 → plain rectangle, identical to stall_parallelogram.
+    """
+    t = math.radians(theta_deg)
+    s, c = math.sin(t), math.cos(t)
+    W, L = stall_width, stall_length
+    r = row_y
+
+    r0 = (x + W * s, r)
+    r1 = (x, r + W * c)
+    r2 = (x + L * c, r + W * c + L * s)
+    r3 = (x + W * s + L * c, r + L * s)
+    return Polygon([r0, r1, r2, r3])
+
+
 def offset_inward(polygon: Polygon, distance: float) -> Polygon:
     """Shrink polygon inward by distance using pyclipper (Clipper2)."""
     if distance <= 0:
@@ -58,3 +85,26 @@ def offset_inward(polygon: Polygon, distance: float) -> Polygon:
 def rotate_geom(geom, angle_deg: float, origin):
     """Rotate geometry by angle_deg (CCW) around origin."""
     return affinity.rotate(geom, angle_deg, origin=origin, use_radians=False)
+
+
+def polygon_edge_directions(polygon: Polygon) -> list[float]:
+    """Return unique edge orientations in [0°, 180°), longest total edge-length first.
+
+    Each value is a candidate *orientation* for the banding generator: passing it
+    as LayoutParams.orientation makes aisles run parallel to that polygon edge.
+    """
+    coords = list(polygon.exterior.coords)
+    by_angle: dict[int, float] = {}
+
+    for i in range(len(coords) - 1):
+        dx = coords[i + 1][0] - coords[i][0]
+        dy = coords[i + 1][1] - coords[i][1]
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            continue
+        # Fold to [0°, 180°): parallel and anti-parallel edges share the same orientation
+        ang = math.degrees(math.atan2(dy, dx)) % 180.0
+        key = round(ang)
+        by_angle[key] = by_angle.get(key, 0.0) + length
+
+    return [float(a) for a, _ in sorted(by_angle.items(), key=lambda kv: -kv[1])]
