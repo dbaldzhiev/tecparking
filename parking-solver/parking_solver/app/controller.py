@@ -3,11 +3,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from shapely.geometry import Point
+
 from parking_solver.core import generator
 from parking_solver.core.ada_placement import place_special_stalls
-from parking_solver.core.model import FixedElements, Layout, LayoutParams, Site
+from parking_solver.core.geometry.helpers import longest_edge_midpoint
+from parking_solver.core.model import (
+    Entrance,
+    EntranceKind,
+    FixedElements,
+    Layout,
+    LayoutParams,
+    Site,
+)
 from parking_solver.core.regulations.engine import RegulationProfile, load_profile
 from parking_solver.io import export_dxf, import_dxf, project_io
+
+
+def _default_entrance(polygon) -> Entrance:
+    """A single site entrance at the midpoint of the longest boundary edge."""
+    mx, my = longest_edge_midpoint(polygon)
+    return Entrance(point=Point(mx, my), kind=EntranceKind.SITE)
 
 _DEFAULT_PROFILE = (
     Path(__file__).parent.parent / "core" / "regulations" / "profiles" / "generic_eu.yaml"
@@ -36,13 +52,26 @@ class Controller:
         if not selected:
             raise ValueError("No matching entities for the given handles")
         poly = import_dxf.boundary_from_entities(selected, tol)
-        self.site = Site(boundary=poly)
+        self.site = Site(boundary=poly, entrances=[_default_entrance(poly)])
         self.layout = None
 
     def set_boundary_from_polygon(self, coords: list[tuple[float, float]]) -> None:
         from shapely.geometry import Polygon
-        self.site = Site(boundary=Polygon(coords))
+        poly = Polygon(coords)
+        self.site = Site(boundary=poly, entrances=[_default_entrance(poly)])
         self.layout = None
+
+    # ── entrances ───────────────────────────────────────────────────────────────
+
+    def add_entrance(self, x: float, y: float, kind: EntranceKind = EntranceKind.SITE) -> None:
+        """Append a user-placed entrance at world coords (x, y)."""
+        if self.site is None:
+            return
+        self.site.entrances.append(Entrance(point=Point(x, y), kind=kind))
+
+    def clear_entrances(self) -> None:
+        if self.site is not None:
+            self.site.entrances = []
 
     # ── params / site config ──────────────────────────────────────────────────
 

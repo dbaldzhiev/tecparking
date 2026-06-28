@@ -1,0 +1,29 @@
+# Bulgarian open-air parking regulation profile
+# Authority: Наредба № РД-02-20-2 от 20 декември 2017 г. (consolidated 2026)
+#
+# Stall dimensions: professional standard practice based on pre-2026 Appendix 30
+# values (Appendix 30, Table 1 and 1a were repealed by бр. 13 от 2026 г.,
+# effective 01.03.2026). For GARAGE stalls, Art. 300(4) mandates min 2.75 × 5.50 m.
+# Art. 552(2): lateral clearance to obstacles ≥ 0.75 m (governs accessible stall width).
+#
+# Aisle widths: professional consensus matching pre-2026 Appendix 30 design values.
+id: bulgarian
+units: metres
+stalls:
+  standard:       {width: 2.50, length: 5.00}
+  compact:        {width: 2.30, length: 4.50, max_ratio: 0.25}
+  accessible:     {width: 3.50, length: 5.00, access_aisle: 0.75}
+  accessible_van: {width: 3.90, length: 5.00, access_aisle: 1.15}
+  ev:             {width: 2.50, length: 5.00}
+aisles:
+  "90": {two_way: 6.00, one_way: 6.00}
+  "75": {one_way: 5.50}
+  "60": {one_way: 4.50}
+  "45": {one_way: 3.50}
+  "30": {one_way: 3.00}
+fire_lane: {min_width: 3.50, max_dead_end: 50.0}
+overhang_allowance: 0.75
+accessible_count:
+  table: [[1,1],[25,2],[50,3],[75,4],[100,5],[150,6],[200,7],[300,8],[400,9],[500,10]]
+  van_fraction: 0.20
+# No EV mandate in current Bulgarian regulation

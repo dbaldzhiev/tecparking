@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDockWidget,
     QDoubleSpinBox,
@@ -20,6 +21,15 @@ from shapely.geometry import Polygon
 
 from parking_solver.core.geometry.helpers import polygon_edge_directions
 from parking_solver.core.model import AisleDir, LayoutParams, LayoutType
+from parking_solver.core.regulations.engine import RegulationProfile, load_profile
+
+_PROFILES_DIR = (
+    Path(__file__).parent.parent / "core" / "regulations" / "profiles"
+)
+_KNOWN_PROFILES: list[tuple[str, str]] = [
+    ("Generic EU", "generic_eu.yaml"),
+    ("Bulgarian (BG)", "bulgarian.yaml"),
+]
 
 
 class ParamsPanel(QDockWidget):
@@ -27,11 +37,13 @@ class ParamsPanel(QDockWidget):
 
     Emits `params_changed(LayoutParams)` after a short debounce so the
     canvas can auto-regenerate without hammering the solver on every tick.
+    Emits `profile_changed(RegulationProfile)` when the user switches profiles.
     """
 
-    params_changed = Signal(object)   # LayoutParams
+    params_changed = Signal(object)    # LayoutParams
+    profile_changed = Signal(object)   # RegulationProfile
 
-    _ANGLES = [45, 60, 75, 90]
+    _ANGLES = [30, 45, 60, 75, 90]
 
     def __init__(self, parent=None) -> None:
         super().__init__("Parameters", parent)
@@ -46,9 +58,6 @@ class ParamsPanel(QDockWidget):
         self._debounce.setInterval(150)
         self._debounce.timeout.connect(self._emit_params)
 
-        self._auto_cb = QCheckBox("Auto-generate on change")
-        self._auto_cb.setChecked(True)
-
         # ── stall geometry ────────────────────────────────────────────────────
         stall_box = QGroupBox("Stall")
         stall_form = QFormLayout(stall_box)
@@ -56,7 +65,7 @@ class ParamsPanel(QDockWidget):
         self._angle_combo = QComboBox()
         for a in self._ANGLES:
             self._angle_combo.addItem(f"{a}°", a)
-        self._angle_combo.setCurrentIndex(3)  # default 90°
+        self._angle_combo.setCurrentIndex(4)  # default 90°
         stall_form.addRow("Angle:", self._angle_combo)
 
         self._width_spin = QDoubleSpinBox()
@@ -97,13 +106,12 @@ class ParamsPanel(QDockWidget):
         layout_box = QGroupBox("Layout")
         layout_form = QFormLayout(layout_box)
 
+        # Only buildable, well-connected strategies are offered.
         self._strategy_combo = QComboBox()
+        self._strategy_combo.addItem("Adaptive (recommended)", LayoutType.SUBDIVIDED)
+        self._strategy_combo.addItem("Perimeter + infill", LayoutType.RING_INFILL)
         self._strategy_combo.addItem("Banded rows", LayoutType.STANDARD)
         self._strategy_combo.addItem("Herringbone", LayoutType.FISHBONE)
-        self._strategy_combo.addItem("Perimeter ring", LayoutType.PERIMETER_RING)
-        self._strategy_combo.addItem("Ring + infill", LayoutType.RING_INFILL)
-        self._strategy_combo.addItem("Multi-ring", LayoutType.MULTI_RING)
-        self._strategy_combo.addItem("Spine + branches", LayoutType.SPINE_BRANCHES)
         layout_form.addRow("Strategy:", self._strategy_combo)
 
         self._orient_slider = QSlider(Qt.Horizontal)
@@ -124,6 +132,15 @@ class ParamsPanel(QDockWidget):
         self._edge_btn_row.setVisible(False)
         layout_form.addRow("Snap to edge:", self._edge_btn_row)
 
+        # ── regulation profile ────────────────────────────────────────────────
+        reg_box = QGroupBox("Regulation")
+        reg_form = QFormLayout(reg_box)
+
+        self._profile_combo = QComboBox()
+        for label, _ in _KNOWN_PROFILES:
+            self._profile_combo.addItem(label)
+        reg_form.addRow("Profile:", self._profile_combo)
+
         # ── site ─────────────────────────────────────────────────────────────
         site_box = QGroupBox("Site")
         site_form = QFormLayout(site_box)
@@ -139,10 +156,10 @@ class ParamsPanel(QDockWidget):
         # ── assemble ──────────────────────────────────────────────────────────
         inner = QWidget()
         vbox = QVBoxLayout(inner)
-        vbox.addWidget(self._auto_cb)
         vbox.addWidget(stall_box)
         vbox.addWidget(aisle_box)
         vbox.addWidget(layout_box)
+        vbox.addWidget(reg_box)
         vbox.addWidget(site_box)
         vbox.addStretch()
 
@@ -160,15 +177,17 @@ class ParamsPanel(QDockWidget):
         self._aisle_w_spin.valueChanged.connect(self._schedule)
         self._orient_slider.valueChanged.connect(self._on_orientation_changed)
         self._setback_spin.valueChanged.connect(self._schedule)
-        self._strategy_combo.currentIndexChanged.connect(self._schedule)
+        self._strategy_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
 
-        self._on_angle_changed()  # enforce initial aisle-dir state
+        self._on_angle_changed()    # enforce initial aisle-dir state
+        self._on_strategy_changed() # enforce initial angle-control state
 
     # ── public ────────────────────────────────────────────────────────────────
 
     @property
     def auto_generate(self) -> bool:
-        return self._auto_cb.isChecked()
+        return True   # the canvas always updates on parameter change
 
     def current_params(self) -> LayoutParams:
         angle = self._angle_combo.currentData()
@@ -187,6 +206,11 @@ class ParamsPanel(QDockWidget):
 
     def current_setback(self) -> float:
         return self._setback_spin.value()
+
+    def current_profile(self) -> RegulationProfile:
+        idx = self._profile_combo.currentIndex()
+        _, filename = _KNOWN_PROFILES[idx]
+        return load_profile(_PROFILES_DIR / filename)
 
     def set_site_polygon(self, polygon: Polygon | None) -> None:
         """Update snap-to-edge buttons to reflect the current site polygon."""
@@ -220,10 +244,21 @@ class ParamsPanel(QDockWidget):
     def _on_angle_changed(self) -> None:
         angle = self._angle_combo.currentData()
         is_90 = angle == 90
-        # Only 90° supports two-way aisles in the profile
         self._dir_combo.setEnabled(is_90)
         if not is_90:
             self._dir_combo.setCurrentIndex(1)  # force one-way
+        self._schedule()
+
+    def _on_strategy_changed(self) -> None:
+        # All offered strategies use the angle as the module angle (Adaptive treats
+        # it as the per-region program). Direction only applies to 90° two-way.
+        self._angle_combo.setEnabled(True)
+        self._dir_combo.setEnabled(self._angle_combo.currentData() == 90)
+        self._schedule()
+
+    def _on_profile_changed(self) -> None:
+        profile = self.current_profile()
+        self.profile_changed.emit(profile)
         self._schedule()
 
     def _snap_orientation(self, deg: int) -> None:
@@ -234,8 +269,7 @@ class ParamsPanel(QDockWidget):
         self._schedule()
 
     def _schedule(self, *_) -> None:
-        if self._auto_cb.isChecked():
-            self._debounce.start()
+        self._debounce.start()
 
     def _emit_params(self) -> None:
         self.params_changed.emit(self.current_params())

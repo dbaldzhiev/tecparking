@@ -87,6 +87,24 @@ def rotate_geom(geom, angle_deg: float, origin):
     return affinity.rotate(geom, angle_deg, origin=origin, use_radians=False)
 
 
+def longest_edge_midpoint(polygon: Polygon) -> tuple[float, float]:
+    """Midpoint of the polygon's longest exterior edge.
+
+    Used to position a default site entrance: the longest edge is almost always
+    the street frontage where vehicles enter.  Returns the point in world coords.
+    """
+    coords = list(polygon.exterior.coords)
+    best_len = -1.0
+    best_mid = (polygon.centroid.x, polygon.centroid.y)
+    for i in range(len(coords) - 1):
+        (x0, y0), (x1, y1) = coords[i], coords[i + 1]
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length > best_len:
+            best_len = length
+            best_mid = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+    return best_mid
+
+
 def polygon_edge_directions(polygon: Polygon) -> list[float]:
     """Return unique edge orientations in [0°, 180°), longest total edge-length first.
 

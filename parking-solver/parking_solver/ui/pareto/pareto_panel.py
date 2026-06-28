@@ -17,7 +17,6 @@ from typing import Optional
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDockWidget,
@@ -31,14 +30,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from parking_solver.core.model import Layout
+from parking_solver.core.model import LayoutType
 from parking_solver.core.optimizer import (
-    N_OBJ,
     OBJ_LABELS,
     Candidate,
     ParetoResult,
     candidate_advantages,
 )
+
+# Per-strategy colours for explore-mode scatter (RGBA)
+_STRATEGY_BRUSH: dict[LayoutType, tuple[int, int, int]] = {
+    LayoutType.STANDARD:       (80,  160,  80),
+    LayoutType.FISHBONE:       (80,  200, 160),
+    LayoutType.PERIMETER_RING: (80,  120, 200),
+    LayoutType.RING_INFILL:    (160,  80, 200),
+    LayoutType.MULTI_RING:     (200,  80,  80),
+    LayoutType.SPINE_BRANCHES: (200, 160,  80),
+    LayoutType.MIXED_ANGLE:    (220, 100, 180),
+    LayoutType.SUBDIVIDED:     (120, 200, 120),
+}
 
 pg.setConfigOption("background", "#1e1e1e")
 pg.setConfigOption("foreground", "#dddddd")
@@ -54,6 +64,8 @@ class ParetoPanel(QDockWidget):
         self._result: Optional[ParetoResult] = None
         self._candidates: list[Candidate] = []
         self._selected_idx: Optional[int] = None
+        # Per-candidate brushes set in explore mode (None → use uniform green)
+        self._candidate_brushes: list | None = None
 
         # ── axis selectors ─────────────────────────────────────────────────────
         self._combo_x = QComboBox()
@@ -123,6 +135,7 @@ class ParetoPanel(QDockWidget):
         self._candidates = []
         self._selected_idx = None
         self._result = None
+        self._candidate_brushes = None
         self._scatter.setData([])
         self._adv_text.clear()
         self._load_btn.setEnabled(False)
@@ -141,10 +154,36 @@ class ParetoPanel(QDockWidget):
     def finish_run(self, result: ParetoResult) -> None:
         self._result = result
         self._candidates = list(result.candidates)
+        self._candidate_brushes = None
         self._progress.setVisible(False)
         self._gen_label.setText(
             f"Done — {len(self._candidates)} non-dominated candidates"
         )
+        self._redraw()
+
+    def load_explore_results(self, results: list, pareto_result: ParetoResult) -> None:
+        """Show all explore results coloured by strategy type.
+
+        *results* is ``list[StrategyResult]`` (imported lazily to avoid circular deps).
+        *pareto_result* is the corresponding ``ParetoResult`` built from the same list.
+        """
+        self._result = pareto_result
+        self._candidates = list(pareto_result.candidates)
+        self._selected_idx = None
+        self._progress.setVisible(False)
+        self._gen_label.setText(
+            f"Explore — {len(self._candidates)} layouts  (colour = strategy)"
+        )
+        self._adv_text.clear()
+        self._load_btn.setEnabled(False)
+
+        # Build per-candidate brushes from strategy type
+        brushes = []
+        for r in results:
+            rgb = _STRATEGY_BRUSH.get(r.layout_type, (150, 150, 150))
+            brushes.append(pg.mkBrush(*rgb, 200))
+        self._candidate_brushes = brushes
+
         self._redraw()
 
     # ── internals ─────────────────────────────────────────────────────────────
@@ -161,11 +200,18 @@ class ParetoPanel(QDockWidget):
         xs = self._display_value(mat[:, xi], xi)
         ys = self._display_value(mat[:, yi], yi)
 
-        brushes = [
-            pg.mkBrush(255, 200, 0, 240) if i == self._selected_idx
-            else pg.mkBrush(80, 160, 80, 200)
-            for i in range(len(self._candidates))
-        ]
+        if self._candidate_brushes:
+            brushes = [
+                pg.mkBrush(255, 200, 0, 240) if i == self._selected_idx
+                else self._candidate_brushes[i]
+                for i in range(len(self._candidates))
+            ]
+        else:
+            brushes = [
+                pg.mkBrush(255, 200, 0, 240) if i == self._selected_idx
+                else pg.mkBrush(80, 160, 80, 200)
+                for i in range(len(self._candidates))
+            ]
 
         self._scatter.setData(
             x=xs, y=ys,
@@ -179,7 +225,7 @@ class ParetoPanel(QDockWidget):
     @staticmethod
     def _display_value(col: np.ndarray, obj_idx: int) -> np.ndarray:
         """Flip negated objectives back to their natural (displayed) direction."""
-        if obj_idx in (0, 2):   # stall count and ADA margin were negated
+        if obj_idx in (0, 4):   # OBJ_COUNT and OBJ_ADA_MARGIN are negated
             return -col
         return col
 

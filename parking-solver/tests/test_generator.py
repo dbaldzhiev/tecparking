@@ -22,11 +22,15 @@ def default_params():
 
 
 def test_generator_rectangle_stall_count(profile, default_params):
-    """Golden test: 50×32 m rectangle with no setback → exactly 80 stalls."""
+    """Golden test: 50×32 m rectangle, no setback → 60 stalls.
+
+    (80 stall cells fit, but cross-aisle collectors — spaced so no row runs longer
+    than ~40 m — occupy some columns; reserved lanes clip the stalls they cover.)
+    """
     site = Site(boundary=box(0, 0, 50, 32), setbacks=0.0)
     layout = generate(site, profile, default_params)
-    assert layout.metrics.total_stalls == 80, (
-        f"Expected 80 stalls, got {layout.metrics.total_stalls}"
+    assert layout.metrics.total_stalls == 60, (
+        f"Expected 60 stalls, got {layout.metrics.total_stalls}"
     )
 
 
@@ -424,9 +428,54 @@ def test_generate_all_all_inside(profile):
                 f"{result.label}: stall {i} only {ratio:.4f} inside boundary"
 
 
-def test_generate_all_covers_all_strategies(profile):
+def test_generate_all_analyzer_picks_strategies(profile):
+    """The analyzer narrows the search: a simple convex rectangle uses the go-to
+    perimeter+infill only; never the deprecated empty-centre patterns."""
     site = Site(boundary=box(0, 0, 80, 60), setbacks=0.0)
     results = generate_all(site, profile, stall_width=2.5, stall_length=5.0)
+    assert results
     found = {r.layout_type for r in results}
-    assert found == set(LayoutType), \
-        f"Missing strategies: {set(LayoutType) - found}"
+    buildable = {
+        LayoutType.RING_INFILL, LayoutType.SUBDIVIDED,
+        LayoutType.STANDARD, LayoutType.FISHBONE,
+    }
+    assert found <= buildable, f"Unexpected strategy explored: {found - buildable}"
+    # Convex compact rectangle → perimeter+infill is the go-to.
+    assert LayoutType.RING_INFILL in found
+    deprecated = {
+        LayoutType.PERIMETER_RING, LayoutType.MULTI_RING,
+        LayoutType.SPINE_BRANCHES, LayoutType.MIXED_ANGLE,
+    }
+    assert not (found & deprecated)
+
+
+def test_analyze_polygon_decisions(profile):
+    """Analyzer routes shapes: convex→perimeter+infill, concave→+subdivision,
+    narrow→banded+herringbone (herringbone only for tight spaces)."""
+    from parking_solver.core.generator import analyze_polygon, _compute_work
+    from shapely.geometry import Polygon
+
+    convex = _compute_work(Site(boundary=box(0, 0, 80, 60)), profile, None)
+    p = analyze_polygon(convex, profile)
+    assert p.perimeter_infill and not p.subdivision and not p.herringbone
+
+    lshape = _compute_work(
+        Site(boundary=Polygon([(0, 0), (80, 0), (80, 25), (45, 25), (45, 50), (0, 50)])),
+        profile, None)
+    p = analyze_polygon(lshape, profile)
+    assert p.subdivision   # reflex vertex → subdivide
+
+    narrow = _compute_work(Site(boundary=box(0, 0, 120, 15)), profile, None)
+    p = analyze_polygon(narrow, profile)
+    assert p.herringbone and p.banded and not p.subdivision
+
+
+def test_generate_all_connectivity_is_strong(profile):
+    """Every explored layout must be well-connected (low dead ends, drivable)."""
+    from parking_solver.core.scorer import compute_circuit_validity, compute_dead_ends
+    site = Site(boundary=box(0, 0, 60, 40), setbacks=0.0,
+                entrances=[])
+    results = generate_all(site, profile, stall_width=2.5, stall_length=5.0)
+    for r in results:
+        assert compute_dead_ends(r.layout.aisles) <= 0.20, \
+            f"{r.layout_type.value}: too many dead ends"

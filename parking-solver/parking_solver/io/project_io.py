@@ -55,6 +55,7 @@ def _ser_aisle(a: DriveAisle) -> dict:
         "centerline": mapping(a.centerline),
         "width": a.width,
         "direction": a.direction.value,
+        "flow": list(a.flow) if a.flow is not None else None,
     }
 
 
@@ -116,10 +117,12 @@ def _des_stall(d: dict) -> Stall:
 
 
 def _des_aisle(d: dict) -> DriveAisle:
+    flow = d.get("flow")
     return DriveAisle(
         centerline=shape(d["centerline"]),
         width=d["width"],
         direction=AisleDir(d["direction"]),
+        flow=tuple(flow) if flow is not None else None,
     )
 
 

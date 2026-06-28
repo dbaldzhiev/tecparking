@@ -24,6 +24,8 @@ class LayoutType(Enum):
     RING_INFILL = "ring_infill"         # perimeter ring + banded interior
     MULTI_RING = "multi_ring"           # concentric perimeter rings filling inward
     SPINE_BRANCHES = "spine_branches"   # wide central collector + perpendicular branch rows
+    MIXED_ANGLE = "mixed_angle"         # two horizontal bands at different stall angles
+    SUBDIVIDED = "subdivided"           # polygon decomposed into sub-regions, best strategy each
 
 
 class AisleDir(Enum):
@@ -64,6 +66,7 @@ class DriveAisle:
     centerline: LineString
     width: float
     direction: AisleDir
+    flow: tuple[float, float] | None = None  # unit travel vector for one-way aisles
 
 
 @dataclass

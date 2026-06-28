@@ -20,10 +20,12 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QFont,
+    QImage,
     QPainter,
     QPainterPath,
     QPen,
@@ -40,10 +42,19 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsPolygonItem,
     QGraphicsScene,
+    QGraphicsSimpleTextItem,
     QGraphicsView,
 )
 
-from parking_solver.core.model import DriveAisle, Layout, Stall, StallType
+from parking_solver.core.model import (
+    AisleDir,
+    DriveAisle,
+    Entrance,
+    EntranceKind,
+    Layout,
+    Stall,
+    StallType,
+)
 
 # ── palette ───────────────────────────────────────────────────────────────────
 _STALL_COLORS = {
@@ -128,16 +139,32 @@ class StallItem(QGraphicsPolygonItem):
 
 
 class AisleItem(QGraphicsPathItem):
+    """A drive aisle rendered as a thick road band.
+
+    One-way aisles are tinted differently and carry chevron arrows along the
+    centerline; two-way aisles carry a dashed centre divider line.
+    """
+
+    _COL_TWO_WAY = QColor(200, 180, 80, 100)   # amber
+    _COL_ONE_WAY = QColor(90, 180, 200, 110)   # cyan
+
     def __init__(self, aisle: DriveAisle, parent=None):
         super().__init__(parent)
+        self._direction = aisle.direction
+        self._flow = aisle.flow   # world-space unit travel vector, or None
         path = QPainterPath()
+
+        # Collect scene-space polylines so paint() can draw arrows / dividers.
+        self._segments: list[list[QPointF]] = []
 
         def _add_ls(ls):
             coords = list(ls.coords)
             if coords:
-                path.moveTo(_w2s(*coords[0]))
-                for c in coords[1:]:
-                    path.lineTo(_w2s(*c))
+                pts = [_w2s(*c) for c in coords]
+                self._segments.append(pts)
+                path.moveTo(pts[0])
+                for p in pts[1:]:
+                    path.lineTo(p)
 
         cl = aisle.centerline
         if cl.geom_type == "LineString":
@@ -147,10 +174,90 @@ class AisleItem(QGraphicsPathItem):
                 _add_ls(part)
 
         self.setPath(path)
-        pen = QPen(QColor(200, 180, 80, 100), aisle.width)
+        col = self._COL_ONE_WAY if aisle.direction == AisleDir.ONE_WAY else self._COL_TWO_WAY
+        pen = QPen(col, aisle.width)
         pen.setCapStyle(Qt.RoundCap)
         self.setPen(pen)
         self.setZValue(2)
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        if self._direction == AisleDir.ONE_WAY:
+            self._paint_arrows(painter)
+        else:
+            self._paint_divider(painter)
+
+    def _paint_divider(self, painter) -> None:
+        """Dashed white centre line for two-way aisles."""
+        pen = QPen(QColor(235, 235, 235, 150), 0.12, Qt.DashLine)
+        painter.setPen(pen)
+        for pts in self._segments:
+            for a, b in zip(pts, pts[1:]):
+                painter.drawLine(a, b)
+
+    def _paint_arrows(self, painter) -> None:
+        """Chevron arrows along the centerline pointing in the travel direction.
+
+        Uses the aisle's BFS-derived `flow` vector when available so arrows point
+        the way a driver actually travels (away from the entrance); falls back to
+        coordinate order otherwise.
+        """
+        pen = QPen(QColor(235, 245, 250, 220), 0.18)
+        painter.setPen(pen)
+        spacing = 6.0       # metres between chevrons
+        size = 0.9          # chevron half-size in metres
+        # World (Y-up) flow → scene (Y-down) flow
+        flow_scene = (self._flow[0], -self._flow[1]) if self._flow else None
+        for pts in self._segments:
+            for a, b in zip(pts, pts[1:]):
+                dx, dy = b.x() - a.x(), b.y() - a.y()
+                seg_len = math.hypot(dx, dy)
+                if seg_len < 1e-6:
+                    continue
+                # pu = position-stepping unit (a→b); du = chevron pointing unit
+                pux, puy = dx / seg_len, dy / seg_len
+                dux, duy = pux, puy
+                if flow_scene is not None and (dux * flow_scene[0] + duy * flow_scene[1]) < 0:
+                    dux, duy = -dux, -duy                  # point chevrons along flow
+                nx, ny = -duy, dux                         # left normal of pointing dir
+                n = max(int(seg_len // spacing), 1)
+                for k in range(1, n + 1):
+                    t = (k - 0.5) * (seg_len / n)
+                    cx, cy = a.x() + pux * t, a.y() + puy * t
+                    tip = QPointF(cx + dux * size, cy + duy * size)
+                    left = QPointF(cx - dux * size + nx * size, cy - duy * size + ny * size)
+                    right = QPointF(cx - dux * size - nx * size, cy - duy * size - ny * size)
+                    painter.drawLine(left, tip)
+                    painter.drawLine(right, tip)
+
+
+class EntranceItem(QGraphicsPathItem):
+    """A site/building entrance marker — a diamond at the entrance point.
+
+    Fixed pixel size (ItemIgnoresTransformations) so it stays visible at any zoom.
+    Green = site entrance, blue = building entrance.
+    """
+
+    _COL_SITE = QColor(80, 220, 90)
+    _COL_BUILDING = QColor(90, 150, 240)
+
+    def __init__(self, entrance: Entrance, parent=None):
+        super().__init__(parent)
+        r = 9
+        path = QPainterPath()
+        path.moveTo(0, -r)
+        path.lineTo(r, 0)
+        path.lineTo(0, r)
+        path.lineTo(-r, 0)
+        path.closeSubpath()
+        self.setPath(path)
+        col = self._COL_SITE if entrance.kind == EntranceKind.SITE else self._COL_BUILDING
+        self.setBrush(QBrush(col))
+        self.setPen(QPen(QColor(20, 20, 20), 1.5))
+        self.setPos(_w2s(entrance.point.x, entrance.point.y))
+        self.setZValue(10)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setToolTip(f"{entrance.kind.value.title()} entrance")
 
 
 class DXFEntityItem(QGraphicsPathItem):
@@ -272,6 +379,7 @@ class ParkingCanvas(QGraphicsView):
     boundary_drawn       = Signal(list)   # list[tuple[float, float]] world coords
     stall_count_changed  = Signal(int)
     draw_status_changed  = Signal(str)    # hint text for the status bar
+    entrance_placed      = Signal(float, float)  # world x, y
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -284,12 +392,17 @@ class ParkingCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setBackgroundBrush(QBrush(QColor(30, 30, 30)))
 
+        # ── entrance-placement mode ───────────────────────────────────────────
+        self._entrance_mode = False
+
         # ── draw-mode state ───────────────────────────────────────────────────
         self._draw_mode   = False
         self._draw_points: list[tuple[float, float]] = []
         self._vertex_items: list[_DrawVertex] = []
         self._edge_items:   list[QGraphicsLineItem] = []
+        self._edge_labels:  list[QGraphicsSimpleTextItem] = []   # live edge lengths (m)
         self._rubber_edge:  Optional[_RubberEdge] = None
+        self._rubber_label: Optional[QGraphicsSimpleTextItem] = None
         self._snap_ring:    Optional[_SnapRing] = None
         self._snapping      = False          # cursor is near first vertex
 
@@ -298,13 +411,29 @@ class ParkingCanvas(QGraphicsView):
         self._layout_items:   list[QGraphicsItem] = []
         self._stall_items:    list[StallItem] = []
         self._dxf_items:      list[DXFEntityItem] = []
+        self._entrance_items: list[EntranceItem] = []
         self._underlay_item:  Optional[QGraphicsPixmapItem] = None
+        self._osm_item:       Optional[QGraphicsPixmapItem] = None
+        self._osm_attrib:     Optional[QGraphicsSimpleTextItem] = None
 
         # ── pan state ─────────────────────────────────────────────────────────
         self._panning   = False
         self._pan_start = QPointF()
 
     # ── public API ────────────────────────────────────────────────────────────
+
+    def set_entrance_mode(self, active: bool) -> None:
+        """Toggle entrance-placement mode: left-click adds an entrance."""
+        self._entrance_mode = active
+        if active:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.PointingHandCursor)
+            self.draw_status_changed.emit(
+                "Click inside the site to add an entrance.  Press the button again to finish."
+            )
+        else:
+            self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+            self.setCursor(Qt.ArrowCursor)
 
     def set_draw_mode(self, active: bool) -> None:
         self._draw_mode = active
@@ -343,6 +472,68 @@ class ParkingCanvas(QGraphicsView):
             self._scene.removeItem(self._underlay_item)
             self._underlay_item = None
 
+    def show_osm_underlay(
+        self, tiles: list, width_px: int, height_px: int, m_per_px: float,
+    ) -> None:
+        """Stitch OSM tiles into a black-and-white halftone backdrop.
+
+        *tiles* is a list of (png_bytes, col, row).  The image is converted to a
+        1-bit diffusion-dithered (halftone) picture, scaled to metres so a site
+        drawn near the origin overlays it at real-world scale, and centred on the
+        scene origin.
+        """
+        self.clear_osm_underlay()
+        canvas_img = QImage(width_px, height_px, QImage.Format_RGB32)
+        canvas_img.fill(QColor(255, 255, 255))
+        painter = QPainter(canvas_img)
+        for data, col, row in tiles:
+            tile = QImage()
+            tile.loadFromData(data, "PNG")
+            if not tile.isNull():
+                painter.drawImage(col * 256, row * 256, tile)
+        painter.end()
+
+        # Grayscale → 1-bit diffusion dither = black-and-white halftone.
+        gray = canvas_img.convertToFormat(QImage.Format_Grayscale8)
+        halftone = gray.convertToFormat(QImage.Format_Mono, Qt.DiffuseDither)
+        display = halftone.convertToFormat(QImage.Format_RGB32)
+
+        item = QGraphicsPixmapItem(QPixmap.fromImage(display))
+        item.setOpacity(0.30)                    # faint backdrop, never obscures the design
+        item.setZValue(-100)                     # firmly behind everything
+        item.setOffset(-width_px / 2.0, -height_px / 2.0)
+        item.setTransform(QTransform().scale(m_per_px, m_per_px))
+        self._scene.addItem(item)
+        self._osm_item = item
+
+        # Required OSM attribution, anchored to the map's bottom-left corner.
+        attrib = QGraphicsSimpleTextItem("© OpenStreetMap contributors")
+        attrib.setBrush(QBrush(QColor(230, 230, 230)))
+        attrib.setPen(QPen(QColor(20, 20, 20), 0.5))
+        font = QFont()
+        font.setPointSize(8)
+        attrib.setFont(font)
+        attrib.setZValue(50)
+        attrib.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        half_w = (width_px / 2.0) * m_per_px
+        half_h = (height_px / 2.0) * m_per_px
+        attrib.setPos(-half_w, half_h)
+        self._scene.addItem(attrib)
+        self._osm_attrib = attrib
+
+        # Only frame the map when the canvas is otherwise empty; never yank the
+        # view away from an existing design.
+        if self._boundary_item is None and not self._layout_items and not self._dxf_items:
+            self.centerOn(0.0, 0.0)
+
+    def clear_osm_underlay(self) -> None:
+        if self._osm_item is not None:
+            self._scene.removeItem(self._osm_item)
+            self._osm_item = None
+        if self._osm_attrib is not None:
+            self._scene.removeItem(self._osm_attrib)
+            self._osm_attrib = None
+
     def show_dxf_entities(self, entities: list) -> None:
         for item in self._dxf_items:
             self._scene.removeItem(item)
@@ -378,7 +569,18 @@ class ParkingCanvas(QGraphicsView):
             self._layout_items.append(item)
             self._stall_items.append(item)
 
+        self.show_entrances(layout.entrances)
         self.stall_count_changed.emit(layout.metrics.total_stalls)
+
+    def show_entrances(self, entrances: list) -> None:
+        """Render entrance markers, replacing any previously shown."""
+        for item in self._entrance_items:
+            self._scene.removeItem(item)
+        self._entrance_items.clear()
+        for e in entrances:
+            item = EntranceItem(e)
+            self._scene.addItem(item)
+            self._entrance_items.append(item)
 
     def clear_layout(self) -> None:
         for item in self._layout_items:
@@ -419,6 +621,13 @@ class ParkingCanvas(QGraphicsView):
             self._panning   = True
             self._pan_start = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+
+        # ── entrance placement left click ─────────────────────────────────────
+        if self._entrance_mode and event.button() == Qt.LeftButton:
+            wx, wy = self._to_world(event.pos())
+            self.entrance_placed.emit(wx, wy)
             event.accept()
             return
 
@@ -525,6 +734,27 @@ class ParkingCanvas(QGraphicsView):
             self._snap_ring.setPos(scene_pos)
             self._snap_ring.setVisible(False)
 
+    def _make_dim_label(self) -> QGraphicsSimpleTextItem:
+        """A fixed-pixel-size text item used to annotate an edge length."""
+        lbl = QGraphicsSimpleTextItem()
+        lbl.setBrush(QBrush(QColor(255, 230, 120)))
+        lbl.setPen(QPen(QColor(20, 20, 20), 0.5))
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        lbl.setFont(font)
+        lbl.setZValue(23)
+        lbl.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self._scene.addItem(lbl)
+        return lbl
+
+    def _set_dim_label(self, lbl: QGraphicsSimpleTextItem,
+                       w1: tuple[float, float], w2: tuple[float, float]) -> None:
+        length = math.hypot(w2[0] - w1[0], w2[1] - w1[1])
+        lbl.setText(f"{length:.1f} m")
+        mid = _w2s((w1[0] + w2[0]) / 2.0, (w1[1] + w2[1]) / 2.0)
+        lbl.setPos(mid.x(), mid.y())
+
     def _add_edge(self, i: int, j: int) -> None:
         p1 = _w2s(*self._draw_points[i])
         p2 = _w2s(*self._draw_points[j])
@@ -534,11 +764,18 @@ class ParkingCanvas(QGraphicsView):
         self._scene.addItem(line)
         self._edge_items.append(line)
 
+        lbl = self._make_dim_label()
+        self._set_dim_label(lbl, self._draw_points[i], self._draw_points[j])
+        self._edge_labels.append(lbl)
+
     def _redraw_edges(self) -> None:
         """Called by _DrawVertex.itemChange when a vertex is dragged."""
         for item in self._edge_items:
             self._scene.removeItem(item)
         self._edge_items.clear()
+        for lbl in self._edge_labels:
+            self._scene.removeItem(lbl)
+        self._edge_labels.clear()
         for i in range(1, len(self._draw_points)):
             self._add_edge(i - 1, i)
         # Also update snap ring position if first vertex moved
@@ -551,10 +788,11 @@ class ParkingCanvas(QGraphicsView):
         self._draw_points.pop()
         v = self._vertex_items.pop()
         self._scene.removeItem(v)
-        # Remove the last edge too
+        # Remove the last edge + its dimension label too
         if self._edge_items:
-            e = self._edge_items.pop()
-            self._scene.removeItem(e)
+            self._scene.removeItem(self._edge_items.pop())
+        if self._edge_labels:
+            self._scene.removeItem(self._edge_labels.pop())
 
     def _update_rubber_edge(self, scene_pos: QPointF) -> None:
         if not self._draw_points:
@@ -569,6 +807,13 @@ class ParkingCanvas(QGraphicsView):
             self._rubber_edge = _RubberEdge()
             self._scene.addItem(self._rubber_edge)
         self._rubber_edge.setLine(last.x(), last.y(), target.x(), target.y())
+
+        # Live length of the segment being drawn (world space is metres).
+        if self._rubber_label is None:
+            self._rubber_label = self._make_dim_label()
+        w_last = self._draw_points[-1]
+        w_target = (target.x(), -target.y())   # scene → world
+        self._set_dim_label(self._rubber_label, w_last, w_target)
 
     def _update_snap(self, view_pos) -> None:
         """Compute screen-space distance to first vertex; set snap state."""
@@ -607,9 +852,17 @@ class ParkingCanvas(QGraphicsView):
             self._scene.removeItem(e)
         self._edge_items.clear()
 
+        for lbl in self._edge_labels:
+            self._scene.removeItem(lbl)
+        self._edge_labels.clear()
+
         if self._rubber_edge is not None:
             self._scene.removeItem(self._rubber_edge)
             self._rubber_edge = None
+
+        if self._rubber_label is not None:
+            self._scene.removeItem(self._rubber_label)
+            self._rubber_label = None
 
         if self._snap_ring is not None:
             self._scene.removeItem(self._snap_ring)
